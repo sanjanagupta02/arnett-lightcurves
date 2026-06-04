@@ -1,0 +1,42 @@
+# SN 2011fe -- Type Ia supernova in M101 (d = 6.4 Mpc)
+# Bolometric lightcurve from Pereira et al. 2013, A&A 554 A27 (Table 2)
+# Explosion date: MJD 55796.81 +/- 0.13 (Pereira et al. 2013, bolometric)
+# Original units 10^42 erg/s converted to L_sun (1 L_sun = 3.828e33 erg/s)
+# Times are days since explosion (MJD - 55796.81).
+#
+# Arnett parameters from Pereira et al. 2013 (Table 3):
+#   tau_r (bolometric rise time) = 16.58 +/- 0.14 d  =>  t_m ~ 16.6 d
+#   L_peak  = (1.17 +/- 0.03) x 10^43 erg/s
+#   M_Ni    = 0.44 +/- 0.08 M_sun  (alpha = 1.2; Arnett rule gives ~0.53 M_sun)
+#   Suggested CLI:
+#     python arnett_fit.py example_lc.csv --v-kms 10000 --kappa 0.10 --R0-Rsun 0 --E0 0
+#
+# NOTE: The first 4 points (days < 5) are excluded. In Type Ia SNe the outermost
+# thin layer of 56Ni heats the surface before the diffusion wave has propagated
+# through the ejecta (the "dark phase" / early-excess effect; Kasen 2010,
+# Piro & Morozova 2016). The one-zone Arnett model assumes fully mixed ejecta
+# and cannot reproduce this early emission -- including those points would bias
+# the fit toward an artificially short diffusion time.
+#
+# Columns: time_days, L_Lsun, L_err_Lsun
+5.79,  7.42e+08,  3.13e+07
+6.79,  1.02e+09,  2.35e+07
+7.79,  1.42e+09,  3.66e+07
+8.79,  1.63e+09,  5.75e+07
+9.89,  2.05e+09,  8.10e+07
+10.79, 2.32e+09,  7.31e+07
+11.79, 2.68e+09,  7.05e+07
+15.79, 3.07e+09,  1.07e+08
+16.79, 2.96e+09,  1.02e+08
+17.79, 2.93e+09,  1.02e+08
+18.79, 2.85e+09,  9.67e+07
+19.79, 2.72e+09,  9.40e+07
+20.79, 2.52e+09,  1.20e+08
+23.79, 2.12e+09,  7.84e+07
+25.79, 1.86e+09,  7.31e+07
+28.79, 1.53e+09,  7.05e+07
+30.79, 1.30e+09,  5.23e+07
+33.79, 1.07e+09,  4.18e+07
+35.79, 9.59e+08,  3.66e+07
+38.79, 8.96e+08,  4.18e+07
+40.79, 8.20e+08,  3.66e+07

@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arnett Lightcurve Explorer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Times New Roman', Times, serif;
+    background: #0d0d0d;
+    color: #e8e4d9;
+    padding: 24px;
+    min-height: 100vh;
+  }
+  a { color: #9ecfff; }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 18px;
+    border-bottom: 0.5px solid #2e2e2e;
+    padding-bottom: 14px;
+  }
+  .header h1 { font-size: 20px; font-weight: normal; letter-spacing: 0.02em; }
+  .header .sub { font-size: 12px; color: #888; margin-top: 3px; font-style: italic; }
+  .header-right { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  /* ── Buttons & select ── */
+  button, select {
+    font-family: 'Times New Roman', Times, serif;
+    font-size: 12px;
+    padding: 5px 13px;
+    background: transparent;
+    border: 0.5px solid #3a3a3a;
+    border-radius: 4px;
+    color: #e8e4d9;
+    cursor: pointer;
+  }
+  button:hover, select:hover { border-color: #666; background: #1a1a1a; }
+  select option { background: #1a1a1a; }
+
+  /* ── Main layout ── */
+  .main { display: grid; grid-template-columns: 1fr 248px; gap: 20px; align-items: start; }
+
+  /* ── Chart panel ── */
+  .chart-panel {}
+  .legend {
+    display: flex; gap: 18px; flex-wrap: wrap;
+    font-size: 12px; color: #888; margin-bottom: 8px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .chart-wrap { position: relative; width: 100%; height: 420px; }
+
+  /* ── Metric cards ── */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .card {
+    background: #141414;
+    border: 0.5px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .card-lbl { font-size: 11px; color: #666; margin-bottom: 4px; }
+  .card-val { font-size: 16px; font-weight: normal; }
+
+  /* ── Sliders panel ── */
+  .sliders-panel { padding-top: 2px; }
+  .section-hd {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: #555;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    padding-bottom: 4px;
+    border-bottom: 0.5px solid #222;
+  }
+  .slider-block { margin-bottom: 11px; }
+  .slider-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 3px;
+  }
+  .slider-row label { font-size: 13px; }
+  .slider-val { font-size: 12px; color: #777; white-space: nowrap; }
+  input[type=range] {
+    width: 100%;
+    height: 3px;
+    cursor: pointer;
+    accent-color: #1E90FF;
+  }
+
+  /* ── Status ── */
+  #status {
+    margin-top: 10px;
+    font-size: 11px;
+    color: #666;
+    font-style: italic;
+    min-height: 14px;
+  }
+
+  /* ── Upload info ── */
+  .upload-note {
+    font-size: 11px;
+    color: #555;
+    margin-top: 10px;
+    line-height: 1.5;
+    border-top: 0.5px solid #222;
+    padding-top: 8px;
+  }
+
+  /* ── Fit button active state ── */
+  #btn-fit { display: none; }
+  #btn-fit.running {
+    border-color: #1E90FF;
+    color: #1E90FF;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Arnett Lightcurve Explorer</h1>
+    <div class="sub">One-zone radiation diffusion model &middot; Arnett (1982)</div>
+  </div>
+  <div class="header-right">
+    <label for="unit-sel" style="font-size:12px;color:#888;">Units:</label>
+    <select id="unit-sel">
+      <option value="lsun" selected>L / L&#x2609;</option>
+      <option value="ergs">L / erg s&#x207B;&#xB9;</option>
+    </select>
+    <input type="file" id="file-inp" accept=".csv,.txt,.dat" style="display:none;">
+    <button id="btn-upload" onclick="document.getElementById('file-inp').click()">Upload data</button>
+    <button id="btn-fit"    onclick="fitData()" style="display:none;">Fit data</button>
+    <button id="btn-clear"  onclick="clearData()" style="display:none;">Clear data</button>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ── Left: chart + cards ── -->
+  <div class="chart-panel">
+    <div class="legend">
+      <div class="legend-item">
+        <svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" stroke="#1E90FF" stroke-width="2"/></svg>
+        <span>L(t)</span>
+      </div>
+      <div class="legend-item">
+        <svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" stroke="#FF4500" stroke-width="2" stroke-dasharray="5 3"/></svg>
+        <span>Q&#x307;(t) &mdash; heating rate</span>
+      </div>
+      <div class="legend-item" id="leg-data" style="display:none;">
+        <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#6B8E23"/></svg>
+        <span>Data</span>
+      </div>
+      <div class="legend-item">
+        <svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" stroke="#800000" stroke-width="1.5" stroke-dasharray="4 3"/></svg>
+        <span>t<sub>peak</sub></span>
+      </div>
+    </div>
+
+    <div class="chart-wrap">
+      <canvas id="lc-chart"
+        role="img"
+        aria-label="Supernova bolometric lightcurve: log luminosity vs time since explosion. Dodgerblue = L(t), orangered dashed = heating rate Q-dot(t), maroon dashed vertical = lightcurve peak, olivedrab circles = uploaded data.">
+        Bolometric lightcurve and heating rate versus time since explosion.
+      </canvas>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-lbl">t<sub>m</sub></div>
+        <div class="card-val" id="c-tm">&mdash;</div>
+      </div>
+      <div class="card">
+        <div class="card-lbl">t<sub>0</sub></div>
+        <div class="card-val" id="c-t0">&mdash;</div>
+      </div>
+      <div class="card">
+        <div class="card-lbl">t<sub>peak</sub></div>
+        <div class="card-val" id="c-tpk">&mdash;</div>
+      </div>
+      <div class="card">
+        <div class="card-lbl">L<sub>peak</sub></div>
+        <div class="card-val" id="c-lpk">&mdash;</div>
+      </div>
+      <div class="card" id="card-chi2" style="display:none;">
+        <div class="card-lbl">&chi;<sup>2</sup>/dof</div>
+        <div class="card-val" id="c-chi2">&mdash;</div>
+      </div>
+    </div>
+
+    <div id="status"></div>
+  </div>
+
+  <!-- ── Right: sliders ── -->
+  <div class="sliders-panel">
+
+    <div class="section-hd">Ejecta</div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-mej">M<sub>ej</sub></label>
+        <span class="slider-val"><span id="v-mej">10.0</span> M<sub>&#x2609;</sub></span>
+      </div>
+      <input type="range" id="s-mej" min="0.1" max="40" step="0.1" value="10">
+    </div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-kap">&kappa;</label>
+        <span class="slider-val"><span id="v-kap">0.100</span> cm&sup2; g<sup>&minus;1</sup></span>
+      </div>
+      <input type="range" id="s-kap" min="0.01" max="0.40" step="0.005" value="0.10">
+    </div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-vej">v<sub>ej</sub></label>
+        <span class="slider-val"><span id="v-vej">5000</span> km s<sup>&minus;1</sup></span>
+      </div>
+      <input type="range" id="s-vej" min="500" max="40000" step="500" value="5000">
+    </div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-r0">R<sub>0</sub></label>
+        <span class="slider-val"><span id="v-r0">500</span> R<sub>&#x2609;</sub></span>
+      </div>
+      <input type="range" id="s-r0" min="0" max="3000" step="10" value="500">
+    </div>
+
+    <div class="section-hd" style="margin-top:16px;">Energy</div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-mni">M<sub>Ni</sub></label>
+        <span class="slider-val"><span id="v-mni">0.050</span> M<sub>&#x2609;</sub></span>
+      </div>
+      <input type="range" id="s-mni" min="0.001" max="1.5" step="0.005" value="0.05">
+    </div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-e0">E<sub>0</sub></label>
+        <span class="slider-val"><span id="v-e0">1.0</span> &times;10<sup>49</sup> erg</span>
+      </div>
+      <input type="range" id="s-e0" min="0" max="20" step="0.1" value="1.0">
+    </div>
+
+    <div class="section-hd" style="margin-top:16px;">Data offsets</div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-tsh">&Delta;t <span style="font-size:10px;color:#555;">(epoch)</span></label>
+        <span class="slider-val"><span id="v-tsh">0.0</span> d</span>
+      </div>
+      <input type="range" id="s-tsh" min="-300" max="300" step="0.5" value="0">
+    </div>
+
+    <div class="slider-block">
+      <div class="slider-row">
+        <label for="s-lsh">&Delta; log L <span style="font-size:10px;color:#555;">(norm.)</span></label>
+        <span class="slider-val"><span id="v-lsh">0.00</span> dex</span>
+      </div>
+      <input type="range" id="s-lsh" min="-4" max="4" step="0.05" value="0">
+    </div>
+
+    <div class="upload-note">
+      Upload a 2- or 3-column file:<br>
+      <code style="font-size:11px;color:#888;">time_days &nbsp; L &nbsp; [L_err]</code><br>
+      Comma, tab, or space delimited.<br>
+      Lines starting with <code style="font-size:11px;color:#888;">#</code> are skipped.
+    </div>
+
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+'use strict';
+
+// ── Physical constants (CGS) ─────────────────────────────────────────────────
+const CLIGHT = 3.0e10;
+const MSUN   = 1.989e33;
+const RSUN   = 6.957e10;
+const LSUN   = 3.828e33;
+const DAY    = 86400.0;
+const TAU_NI = 8.8   * DAY;
+const TAU_CO = 111.3 * DAY;
+const EPS_NI = 3.90e10;
+const EPS_CO = 6.78e9;
+
+// ── Radioactive heating rate (erg/s) ─────────────────────────────────────────
+// Q(t) = M_Ni * [eps_Ni * exp(-t/tau_Ni) + eps_Co * (exp(-t/tau_Co) - exp(-t/tau_Ni))]
+function heatingRate(t_s, Mni_g) {
+    const Ni_term = EPS_NI * Math.exp(-t_s / TAU_NI);
+    const Co_term = EPS_CO * (Math.exp(-t_s / TAU_CO) - Math.exp(-t_s / TAU_NI));
+    return Mni_g * (Ni_term + Co_term);
+}
+
+// ── Arnett integral, numerically stable O(N^2) ───────────────────────────────
+// Stable form: exponents inside integrand are always <= 0 (no overflow).
+//
+// L(t) = (1/tm^2) * [t0*E0*exp((t0^2 - (t+t0)^2)/2tm^2)
+//          + integral_0^t (t'+t0)*exp(((t'+t0)^2-(t+t0)^2)/2tm^2)*Q(t')dt']
+//
+// Parameters in CGS. Returns L in erg/s.
+function computeModel(Mej_g, kap, Mni_g, v_cms, R0_cm, E0_erg) {
+    const t0  = R0_cm / v_cms;
+    const tm  = Math.sqrt(3.0 * kap * Mej_g / (4.0 * Math.PI * v_cms * CLIGHT));
+    const tm2 = tm * tm;
+
+    // Uniform time grid, 0 to 400 days
+    const N      = 400;
+    const t_max  = 400.0 * DAY;
+    const dt     = t_max / (N - 1);
+    const t_s    = [];  // time in seconds
+    const Q_cgs  = [];  // heating rate in erg/s
+    for (let i = 0; i < N; i++) {
+        const ti = (i === 0) ? 1e-4 * DAY : i * dt;
+        t_s.push(ti);
+        Q_cgs.push(heatingRate(ti, Mni_g));
+    }
+
+    // Precompute (tj + t0)^2 / (2 * tm^2) for each grid point
+    // These are large positive numbers but never go to exp() directly
+    const halfSq = t_s.map(ti => { const x = ti + t0; return (x * x) / (2.0 * tm2); });
+    const t0sq2  = (t0 * t0) / (2.0 * tm2);
+
+    // For each output time i, compute the stable integral
+    const L_cgs = new Array(N);
+    for (let i = 0; i < N; i++) {
+        const shift = -halfSq[i];   // = -(ti+t0)^2 / 2tm^2, always <= 0
+
+        // E0 boundary term: contribution from initial energy at t=0
+        let S = t0 * E0_erg * Math.exp(t0sq2 + shift);
+
+        // Trapezoid integral over t' from 0 to ti
+        // exponent = halfSq[j] + shift = (tj+t0)^2/2tm^2 - (ti+t0)^2/2tm^2 <= 0
+        for (let j = 0; j <= i; j++) {
+            const fj = (t_s[j] + t0) * Math.exp(halfSq[j] + shift) * Q_cgs[j];
+            const w  = (j === 0 || j === i) ? 0.5 : 1.0;
+            S += w * dt * fj;
+        }
+        L_cgs[i] = Math.max(S / tm2, 0.0);
+    }
+
+    // Find peak luminosity index
+    let iPk = 0;
+    for (let i = 1; i < N; i++) {
+        if (L_cgs[i] > L_cgs[iPk]) iPk = i;
+    }
+
+    return {
+        t_d   : t_s.map(ti => ti / DAY),
+        L_cgs,
+        Q_cgs,
+        tm_d  : tm / DAY,
+        t0_d  : t0 / DAY,
+        tPk_d : t_s[iPk] / DAY,
+        Lpk   : L_cgs[iPk]
+    };
+}
+
+// ── Application state ────────────────────────────────────────────────────────
+let uploadedPts = [];   // [{t_d, L_cgs, Lerr_cgs}]
+let inErgs      = false;
+
+function getParams() {
+    return {
+        Mej : +document.getElementById('s-mej').value * MSUN,
+        kap  : +document.getElementById('s-kap').value,
+        Mni  : +document.getElementById('s-mni').value * MSUN,
+        vej  : +document.getElementById('s-vej').value * 1e5,
+        R0   : +document.getElementById('s-r0').value  * RSUN,
+        E0   : +document.getElementById('s-e0').value  * 1e49
+    };
+}
+function getTshift() { return +document.getElementById('s-tsh').value; }
+function getLshift() { return +document.getElementById('s-lsh').value; }
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
+const SUP_MAP = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵',
+                  '6':'⁶','7':'⁷','8':'⁸','9':'⁹','-':'⁻'};
+function toSup(n) {
+    return n.toString().split('').map(c => SUP_MAP[c] || c).join('');
+}
+function fmtLum(val_cgs, inE) {
+    const y = inE ? val_cgs : val_cgs / LSUN;
+    if (!isFinite(y) || y <= 0) return '—';
+    const exp = Math.floor(Math.log10(y));
+    const man = (y / Math.pow(10, exp)).toFixed(2);
+    const unit = inE ? ' erg/s' : ' L☉';
+    return man + '×10' + toSup(exp) + unit;
+}
+
+// ── Custom Chart.js plugin: error bars + peak vertical line ──────────────────
+const extraPlugin = {
+    id: 'extra',
+    afterDatasetsDraw(chart) {
+        const ctx = chart.ctx;
+        const xs  = chart.scales.x;
+        const ys  = chart.scales.y;
+
+        // Error bars for dataset[2] (uploaded data)
+        const ds = chart.data.datasets[2];
+        if (ds && ds.errData && ds.data.length > 0) {
+            ctx.save();
+            ctx.strokeStyle = '#6B8E23';
+            ctx.lineWidth   = 1.3;
+            ds.data.forEach((pt, i) => {
+                const e = ds.errData[i];
+                if (!e || e <= 0 || !isFinite(pt.y) || pt.y <= 0) return;
+                const yTop = Math.max(pt.y + e, 1e-30);
+                const yBot = Math.max(pt.y - e, 1e-30);
+                const xp   = xs.getPixelForValue(pt.x);
+                const yHi  = ys.getPixelForValue(yTop);
+                const yLo  = ys.getPixelForValue(yBot);
+                // Vertical bar
+                ctx.beginPath(); ctx.moveTo(xp, yHi); ctx.lineTo(xp, yLo); ctx.stroke();
+                // Top cap
+                ctx.beginPath(); ctx.moveTo(xp - 4, yHi); ctx.lineTo(xp + 4, yHi); ctx.stroke();
+                // Bottom cap
+                ctx.beginPath(); ctx.moveTo(xp - 4, yLo); ctx.lineTo(xp + 4, yLo); ctx.stroke();
+            });
+            ctx.restore();
+        }
+
+        // Peak vertical dashed line
+        if (chart._peakT !== undefined) {
+            const xp = xs.getPixelForValue(chart._peakT);
+            if (xp >= chart.chartArea.left && xp <= chart.chartArea.right) {
+                ctx.save();
+                ctx.strokeStyle = '#800000';
+                ctx.lineWidth   = 1.3;
+                ctx.setLineDash([5, 3]);
+                ctx.beginPath();
+                ctx.moveTo(xp, chart.chartArea.top);
+                ctx.lineTo(xp, chart.chartArea.bottom);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+    }
+};
+
+// ── Chart initialisation ─────────────────────────────────────────────────────
+Chart.defaults.font.family = "'Times New Roman', Times, serif";
+Chart.defaults.font.size   = 12;
+Chart.defaults.color       = '#888';
+
+const lcChart = new Chart(document.getElementById('lc-chart'), {
+    type: 'scatter',
+    data: {
+        datasets: [
+            // 0: model L(t)
+            {
+                label: 'L(t)',
+                data: [],
+                showLine: true,
+                borderColor: '#1E90FF',
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.15
+            },
+            // 1: heating rate Q(t)
+            {
+                label: 'Q(t)',
+                data: [],
+                showLine: true,
+                borderColor: 'rgba(255,69,0,0.4)',
+                backgroundColor: 'transparent',
+                borderWidth: 1.5,
+                pointRadius: 0,
+                borderDash: [6, 3],
+                tension: 0.15
+            },
+            // 2: uploaded data points
+            {
+                label: 'Data',
+                data: [],
+                showLine: false,
+                pointRadius: 4.5,
+                pointBackgroundColor: '#6B8E23',
+                pointBorderColor: '#6B8E23',
+                pointBorderWidth: 1,
+                errData: []
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+            legend: { display: false },
+            tooltip: {
+                backgroundColor: '#1a1a1a',
+                borderColor: '#333',
+                borderWidth: 0.5,
+                titleFont: { family: "'Times New Roman', Times, serif", size: 12 },
+                bodyFont:  { family: "'Times New Roman', Times, serif", size: 12 },
+                callbacks: {
+                    label(ctx) {
+                        const x = ctx.parsed.x.toFixed(1);
+                        const y = ctx.parsed.y;
+                        const exp = Math.floor(Math.log10(Math.abs(y)));
+                        const man = (y / Math.pow(10, exp)).toFixed(2);
+                        const unit = inErgs ? 'erg s⁻¹' : 'L☉';
+                        return `t = ${x} d,  L = ${man}×10${toSup(exp)} ${unit}`;
+                    }
+                }
+            }
+        },
+        scales: {
+            x: {
+                type: 'linear',
+                title: {
+                    display: true,
+                    text: 'Time since explosion  (days)',
+                    font: { family: "'Times New Roman', Times, serif", size: 13 }
+                },
+                grid: { color: 'rgba(255,255,255,0.05)' },
+                ticks: {
+                    color: '#888',
+                    font: { family: "'Times New Roman', Times, serif" },
+                    maxTicksLimit: 9
+                }
+            },
+            y: {
+                type: 'logarithmic',
+                title: {
+                    display: true,
+                    text: 'L  (L\u2609)',
+                    font: { family: "'Times New Roman', Times, serif", size: 13 }
+                },
+                grid: { color: 'rgba(255,255,255,0.05)' },
+                ticks: {
+                    color: '#888',
+                    font: { family: "'Times New Roman', Times, serif" },
+                    callback(val) {
+                        const exp = Math.log10(val);
+                        const rnd = Math.round(exp);
+                        if (Math.abs(exp - rnd) < 0.02) return '10' + toSup(rnd);
+                        return '';
+                    },
+                    maxTicksLimit: 7
+                }
+            }
+        }
+    },
+    plugins: [extraPlugin]
+});
+
+// ── Main update function ─────────────────────────────────────────────────────
+function update() {
+    const p    = getParams();
+    const tsh  = getTshift();
+    const lsh  = getLshift();
+    const dL   = Math.pow(10.0, lsh);          // luminosity scale factor
+    const lsc  = inErgs ? 1.0 : 1.0 / LSUN;  // convert erg/s -> display unit
+
+    const m = computeModel(p.Mej, p.kap, p.Mni, p.vej, p.R0, p.E0);
+
+    // Model datasets: apply t_shift to x-axis, logL_shift to model L only
+    lcChart.data.datasets[0].data = m.t_d.map((t, i) => ({
+        x: t + tsh,
+        y: Math.max(m.L_cgs[i] * lsc * dL, 1e-99)
+    }));
+    // Q(t) is a physical heating rate, not scaled by logL_shift
+    lcChart.data.datasets[1].data = m.t_d.map((t, i) => ({
+        x: t + tsh,
+        y: Math.max(m.Q_cgs[i] * lsc, 1e-99)
+    }));
+
+    // Uploaded data: displayed in current units, no t_shift (data is fixed; model shifts to it)
+    lcChart.data.datasets[2].data    = uploadedPts.map(pt => ({
+        x: pt.t_d,
+        y: Math.max(pt.L_cgs * lsc, 1e-99)
+    }));
+    lcChart.data.datasets[2].errData = uploadedPts.map(pt => pt.Lerr_cgs * lsc);
+
+    // Peak line (also shifted with model)
+    lcChart._peakT = m.tPk_d + tsh;
+
+    // Auto y-axis bounds from model + data
+    const allY = [
+        ...m.L_cgs.map(v => v * lsc * dL),
+        ...m.Q_cgs.map(v => v * lsc),
+        ...uploadedPts.map(pt => pt.L_cgs * lsc)
+    ].filter(v => v > 0 && isFinite(v));
+
+    if (allY.length > 0) {
+        let yMax = 0, yMin = Infinity;
+        for (const v of allY) {
+            if (v > yMax) yMax = v;
+            if (v < yMin) yMin = v;
+        }
+        lcChart.options.scales.y.max = yMax * 8.0;
+        lcChart.options.scales.y.min = Math.max(yMin * 0.08, yMax * 2e-5);
+    }
+
+    // Y-axis label
+    lcChart.options.scales.y.title.text = inErgs ? 'L  (erg s\u207b\xb9)' : 'L  (L\u2609)';
+
+    lcChart.update('none');
+
+    // Metric cards
+    document.getElementById('c-tm').textContent  = m.tm_d.toFixed(1)  + ' d';
+    document.getElementById('c-t0').textContent  = m.t0_d.toFixed(2)  + ' d';
+    document.getElementById('c-tpk').textContent = (m.tPk_d + tsh).toFixed(1) + ' d';
+    document.getElementById('c-lpk').innerHTML   = fmtLum(m.Lpk * dL, inErgs);
+
+    // Chi-squared card (only when data loaded)
+    if (uploadedPts.length > 0) {
+        const chi = computeChi2(m.t_d, m.L_cgs, tsh);
+        document.getElementById('card-chi2').style.display = '';
+        document.getElementById('c-chi2').textContent =
+            chi ? chi.chi2dof.toFixed(2) : '—';
+    } else {
+        document.getElementById('card-chi2').style.display = 'none';
+    }
+}
+
+// ── Slider wiring ─────────────────────────────────────────────────────────────
+const SLIDERS = [
+    { id: 's-mej', vid: 'v-mej', fmt: v => (+v).toFixed(1) },
+    { id: 's-kap', vid: 'v-kap', fmt: v => (+v).toFixed(3) },
+    { id: 's-vej', vid: 'v-vej', fmt: v => Math.round(+v).toString() },
+    { id: 's-r0',  vid: 'v-r0',  fmt: v => Math.round(+v).toString() },
+    { id: 's-mni', vid: 'v-mni', fmt: v => (+v).toFixed(3) },
+    { id: 's-e0',  vid: 'v-e0',  fmt: v => (+v).toFixed(1) },
+    { id: 's-tsh', vid: 'v-tsh', fmt: v => (+v).toFixed(1) },
+    { id: 's-lsh', vid: 'v-lsh', fmt: v => (+v).toFixed(2) },
+];
+SLIDERS.forEach(({ id, vid, fmt }) => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', () => {
+        document.getElementById(vid).textContent = fmt(el.value);
+        update();
+    });
+});
+
+document.getElementById('unit-sel').addEventListener('change', function () {
+    inErgs = this.value === 'ergs';
+    update();
+});
+
+// ── Data upload ───────────────────────────────────────────────────────────────
+document.getElementById('file-inp').addEventListener('change', function (e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = evt => parseData(evt.target.result, file.name);
+    reader.readAsText(file);
+    this.value = '';
+});
+
+function parseData(text, fname) {
+    const lines = text.split(/\r?\n/);
+    const pts   = [];
+    let skipped = 0;
+
+    for (const raw of lines) {
+        const line = raw.trim();
+        if (!line || line[0] === '#' || line[0] === '%' || line[0] === '!') continue;
+        // Support comma, tab, or whitespace delimited
+        const cols = line.split(/[\s,]+/).filter(s => s.length > 0);
+        if (cols.length < 2) { skipped++; continue; }
+        const t_d = parseFloat(cols[0]);
+        const L   = parseFloat(cols[1]);
+        if (!isFinite(t_d) || !isFinite(L) || L <= 0) { skipped++; continue; }
+        const Lerr = cols.length >= 3 ? Math.abs(parseFloat(cols[2]) || 0) : 0;
+        // Store internally in erg/s regardless of display unit
+        const L_cgs    = inErgs ? L    : L    * LSUN;
+        const Lerr_cgs = inErgs ? Lerr : Lerr * LSUN;
+        pts.push({ t_d, L_cgs, Lerr_cgs });
+    }
+
+    if (pts.length === 0) {
+        document.getElementById('status').textContent =
+            'No valid data found. Expected: time_days  luminosity  [error]';
+        return;
+    }
+
+    uploadedPts = pts;
+    document.getElementById('btn-clear').style.display  = 'inline-block';
+    document.getElementById('btn-fit').style.display    = 'inline-block';
+    document.getElementById('leg-data').style.display   = 'flex';
+    const hasErr = pts.some(p => p.Lerr_cgs > 0);
+    const skipStr = skipped ? `  (${skipped} lines skipped)` : '';
+    const unitStr = inErgs ? 'erg s\u207b\xb9' : 'L\u2609';
+    document.getElementById('status').textContent =
+        `${pts.length} points loaded from \u201c${fname}\u201d${skipStr} \u00b7 `
+        + `units: ${unitStr} \u00b7 columns: time, L${hasErr ? ', \u00b1\u03c3' : ''}`;
+    update();
+}
+
+function clearData() {
+    uploadedPts = [];
+    document.getElementById('btn-clear').style.display = 'none';
+    document.getElementById('btn-fit').style.display   = 'none';
+    document.getElementById('leg-data').style.display  = 'none';
+    document.getElementById('status').textContent = '';
+    update();
+}
+
+// ── Chi-squared computation ──────────────────────────────────────────────────
+// Linearly interpolates model L at data time points, returns chi2/dof.
+function computeChi2(t_d_model, L_cgs_model, tsh) {
+    if (uploadedPts.length === 0) return null;
+    const n = uploadedPts.length;
+    let chi2 = 0;
+    let valid = 0;
+    for (const pt of uploadedPts) {
+        const t = pt.t_d - tsh;  // model time = data time minus shift
+        // interpolate model
+        let lo = 0, hi = t_d_model.length - 1;
+        if (t < t_d_model[lo] || t > t_d_model[hi]) continue;
+        while (hi - lo > 1) {
+            const mid = (lo + hi) >> 1;
+            if (t_d_model[mid] <= t) lo = mid; else hi = mid;
+        }
+        const frac = (t - t_d_model[lo]) / (t_d_model[hi] - t_d_model[lo]);
+        const Lmod = L_cgs_model[lo] + frac * (L_cgs_model[hi] - L_cgs_model[lo]);
+        const sigma = pt.Lerr_cgs > 0 ? pt.Lerr_cgs : Lmod * 0.1;  // 10% floor if no errors
+        chi2 += Math.pow((pt.L_cgs - Lmod) / sigma, 2);
+        valid++;
+    }
+    return valid >= 2 ? { chi2, dof: valid - 2, chi2dof: chi2 / Math.max(valid - 2, 1) } : null;
+}
+
+// ── Nelder-Mead simplex minimiser ────────────────────────────────────────────
+// Minimises f(x) where x is an n-element array. Returns {x, fval}.
+function nelderMead(f, x0, opts = {}) {
+    const { maxIter = 2000, tol = 1e-7, alpha = 1, gamma = 2, rho = 0.5, sigma = 0.5 } = opts;
+    const n = x0.length;
+    // Build initial simplex
+    let simplex = [x0.slice()];
+    for (let i = 0; i < n; i++) {
+        const v = x0.slice();
+        v[i] = v[i] !== 0 ? v[i] * 1.05 : 0.00025;
+        simplex.push(v);
+    }
+    let fvals = simplex.map(f);
+
+    for (let iter = 0; iter < maxIter; iter++) {
+        // Sort
+        const order = fvals.map((v, i) => i).sort((a, b) => fvals[a] - fvals[b]);
+        simplex = order.map(i => simplex[i]);
+        fvals   = order.map(i => fvals[i]);
+
+        // Convergence check
+        const range = fvals[n] - fvals[0];
+        if (range < tol) break;
+
+        // Centroid of best n points
+        const xo = new Array(n).fill(0);
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) xo[j] += simplex[i][j] / n;
+
+        // Reflection
+        const xr = xo.map((v, j) => v + alpha * (v - simplex[n][j]));
+        const fr = f(xr);
+        if (fr < fvals[0]) {
+            // Expansion
+            const xe = xo.map((v, j) => v + gamma * (xr[j] - v));
+            const fe = f(xe);
+            if (fe < fr) { simplex[n] = xe; fvals[n] = fe; }
+            else         { simplex[n] = xr; fvals[n] = fr; }
+        } else if (fr < fvals[n - 1]) {
+            simplex[n] = xr; fvals[n] = fr;
+        } else {
+            // Contraction
+            const xc = xo.map((v, j) => v + rho * (simplex[n][j] - v));
+            const fc = f(xc);
+            if (fc < fvals[n]) { simplex[n] = xc; fvals[n] = fc; }
+            else {
+                // Shrink
+                for (let i = 1; i <= n; i++) {
+                    simplex[i] = simplex[0].map((v, j) => v + sigma * (simplex[i][j] - v));
+                    fvals[i] = f(simplex[i]);
+                }
+            }
+        }
+    }
+    return { x: simplex[0], fval: fvals[0] };
+}
+
+// ── Fit data button handler ──────────────────────────────────────────────────
+function fitData() {
+    if (uploadedPts.length < 3) {
+        document.getElementById('status').textContent = 'Need at least 3 data points to fit.';
+        return;
+    }
+    const btn = document.getElementById('btn-fit');
+    btn.classList.add('running');
+    btn.textContent = 'Fitting…';
+    btn.disabled = true;
+
+    // Use setTimeout to let the UI update before the synchronous optimisation
+    setTimeout(() => {
+        const p   = getParams();  // kap, vej, R0, E0 fixed from sliders
+        const tsh0 = getTshift();
+
+        // Objective: chi-squared over data points
+        // Free params: [Mni_Msun, Mej_Msun, tshift_days]
+        function objective([Mni_Msun, Mej_Msun, tsh_d]) {
+            if (Mni_Msun <= 0 || Mej_Msun <= 0) return 1e30;
+            const Mni_g = Mni_Msun * MSUN;
+            const Mej_g = Mej_Msun * MSUN;
+            const m = computeModel(Mej_g, p.kap, Mni_g, p.vej, p.R0, p.E0);
+            const r = computeChi2(m.t_d, m.L_cgs, tsh_d);
+            return r ? r.chi2 : 1e30;
+        }
+
+        // Initial guess from current sliders
+        const x0 = [
+            p.Mni / MSUN,
+            p.Mej / MSUN,
+            tsh0
+        ];
+
+        const result = nelderMead(objective, x0, { maxIter: 3000, tol: 1e-9 });
+        const [Mni_fit, Mej_fit, tsh_fit] = result.x;
+
+        // Clamp to physical slider ranges and update
+        const MniClamped = Math.min(Math.max(Mni_fit, 0.001), 1.5);
+        const MejClamped = Math.min(Math.max(Mej_fit, 0.1),   40.0);
+        const tshClamped = Math.min(Math.max(tsh_fit, -300),  300);
+
+        const setSlider = (id, vid, val, fmt) => {
+            const el = document.getElementById(id);
+            el.value = val;
+            document.getElementById(vid).textContent = fmt(val);
+        };
+        setSlider('s-mni', 'v-mni', MniClamped, v => v.toFixed(3));
+        setSlider('s-mej', 'v-mej', MejClamped, v => v.toFixed(1));
+        setSlider('s-tsh', 'v-tsh', tshClamped, v => v.toFixed(1));
+
+        update();
+
+        btn.classList.remove('running');
+        btn.textContent = 'Fit data';
+        btn.disabled = false;
+
+        // Read back the snapped slider values so status chi2 matches the card exactly.
+        const pp   = getParams();
+        const tshA = getTshift();
+        const chi2info = (() => {
+            const m = computeModel(pp.Mej, pp.kap, pp.Mni, pp.vej, pp.R0, pp.E0);
+            return computeChi2(m.t_d, m.L_cgs, tshA);  // same formula as card (dof = valid-2)
+        })();
+        const chi2str = chi2info ? `  &middot;  &chi;&sup2;/dof = ${chi2info.chi2dof.toFixed(2)}` : '';
+        // Use innerHTML so subscripts render correctly
+        document.getElementById('status').innerHTML =
+            `Best fit: M<sub>Ni</sub> = ${(pp.Mni / MSUN).toFixed(3)} M&#x2609;, `
+            + `&thinsp;M<sub>ej</sub> = ${(pp.Mej / MSUN).toFixed(1)} M&#x2609;, `
+            + `&thinsp;&Delta;t = ${tshA.toFixed(1)} d${chi2str}`;
+    }, 20);
+}
+
+// ── Initial render ────────────────────────────────────────────────────────────
+update();
+</script>
+</body>
+</html>

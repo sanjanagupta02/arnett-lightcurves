@@ -1,0 +1,11 @@
+# Output plots
+*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
