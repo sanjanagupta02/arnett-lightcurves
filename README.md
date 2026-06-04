@@ -5,6 +5,7 @@ Includes an interactive HTML explorer, a statistical Python fitter with MCMC, a
 matplotlib slider tool, and a Jupyter notebook with a full derivation walkthrough.
 
 The complete mathematical derivation is in `derivation.pdf`.
+
 Explore the webtool at [https://sanjanagupta02.github.io/arnett-lightcurves/explorer.html](https://sanjanagupta02.github.io/arnett-lightcurves/explorer.html)
 
 ---
