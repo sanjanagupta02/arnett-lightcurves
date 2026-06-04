@@ -37,7 +37,6 @@ The notebook additionally requires `jupyter` or `jupyterlab`.
 |------|-------------|
 | `explorer.html` | Browser tool: 8 sliders, data upload, auto-fit button, live chi-squared card |
 | `arnett_fit.py` | Statistical fitter: `curve_fit` seed + emcee MCMC, corner plot, residuals panel |
-| `arnett_interactive.py` | Matplotlib slider explorer; imports physics from `arnett_fit.py` |
 | `sn_lightcurve_arnett.ipynb` | Jupyter notebook: derivation walkthrough, parameter study, Arnett rule verification |
 | `derivation.pdf` | Full mathematical derivation |
 | `example_lc.csv` | 21-point bolometric lightcurve of SN 2011fe (Type Ia, Pereira et al. 2013), days 5.8–40.8 |
@@ -53,10 +52,6 @@ python arnett_fit.py example_lc.csv --v-kms 10000 --kappa 0.10 --R0-Rsun 0 --E0 
 
 # Fast curve_fit only (no MCMC)
 python arnett_fit.py example_lc.csv --v-kms 10000 --kappa 0.10 --R0-Rsun 0 --E0 0 --no-mcmc
-
-# Interactive matplotlib sliders
-python arnett_interactive.py
-python arnett_interactive.py data.csv
 
 # HTML explorer: open in any browser, no installation needed
 open explorer.html
