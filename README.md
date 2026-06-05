@@ -1,8 +1,7 @@
 # arnett-lightcurves
 
 One-zone Arnett (1982) bolometric lightcurve model for supernovae.
-Includes an interactive HTML explorer, a statistical Python fitter with MCMC, a
-matplotlib slider tool, and a Jupyter notebook with a full derivation walkthrough.
+Includes an interactive HTML explorer, a statistical Python fitter with MCMC, and a Jupyter notebook with a full derivation walkthrough.
 
 The complete mathematical derivation is in `derivation.pdf`.
 

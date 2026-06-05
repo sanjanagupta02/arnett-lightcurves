@@ -253,9 +253,9 @@
     <div class="slider-block">
       <div class="slider-row">
         <label for="s-e0">E<sub>0</sub></label>
-        <span class="slider-val"><span id="v-e0">1.0</span> &times;10<sup>49</sup> erg</span>
+        <span class="slider-val"><span id="v-e0">1.0e49</span> erg</span>
       </div>
-      <input type="range" id="s-e0" min="0" max="20" step="0.1" value="1.0">
+      <input type="range" id="s-e0" min="47" max="52.699" step="0.05" value="49">
     </div>
 
     <div class="section-hd" style="margin-top:16px;">Data offsets</div>
@@ -384,7 +384,7 @@ function getParams() {
         Mni  : +document.getElementById('s-mni').value * MSUN,
         vej  : +document.getElementById('s-vej').value * 1e5,
         R0   : +document.getElementById('s-r0').value  * RSUN,
-        E0   : +document.getElementById('s-e0').value  * 1e49
+        E0   : Math.pow(10, +document.getElementById('s-e0').value)
     };
 }
 function getTshift() { return +document.getElementById('s-tsh').value; }
@@ -641,7 +641,7 @@ const SLIDERS = [
     { id: 's-vej', vid: 'v-vej', fmt: v => Math.round(+v).toString() },
     { id: 's-r0',  vid: 'v-r0',  fmt: v => Math.round(+v).toString() },
     { id: 's-mni', vid: 'v-mni', fmt: v => (+v).toFixed(3) },
-    { id: 's-e0',  vid: 'v-e0',  fmt: v => (+v).toFixed(1) },
+    { id: 's-e0',  vid: 'v-e0',  fmt: v => { const e = Math.floor(+v); const m = Math.pow(10, +v - e); return m.toFixed(1) + 'e' + e; } },
     { id: 's-tsh', vid: 'v-tsh', fmt: v => (+v).toFixed(1) },
     { id: 's-lsh', vid: 'v-lsh', fmt: v => (+v).toFixed(2) },
 ];
