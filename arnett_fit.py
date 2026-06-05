@@ -249,7 +249,7 @@ def run_curve_fit(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg, p0_Mni=None, p0_tm=None
 
 # ── emcee MCMC ───────────────────────────────────────────────────────────────
 
-def make_log_prob(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg):
+def make_log_prob(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg, v_cms, kappa):
     """
     Return the log-posterior function for emcee.
 
@@ -273,6 +273,16 @@ def make_log_prob(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg):
         if not (0.001 <= Mni_sun <= 2.0 and 1.0 <= tm_d <= 500.0
                 and ln_sig_lo <= ln_sig <= ln_sig_hi):
             return -np.inf
+        # Hard physical constraint: diffusion timescale must exceed the
+        # progenitor light-crossing time (t_m > t_0); otherwise the ejecta
+        # would be optically thin before the shock finishes crossing the star,
+        # violating the diffusion approximation the model is built on.
+        if tm_d * DAY <= t0_s:
+            return -np.inf
+        # Hard physical constraint: nickel mass cannot exceed ejecta mass
+        Mej_sun = tm_to_mej(tm_d * DAY, v_cms, kappa) / MSUN
+        if Mni_sun >= Mej_sun:
+            return -np.inf
         sigma_floor = np.exp(ln_sig)
         s2 = Lerr_cgs ** 2 + sigma_floor ** 2
         L_mod = eval_model_at_data(t_days, Mni_sun, tm_d, t0_s, E0_erg)
@@ -284,8 +294,8 @@ def make_log_prob(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg):
     return log_prob
 
 
-def run_mcmc(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg, cf_popt, cf_perr,
-             nwalkers=32, nburn=500, nprod=3000):
+def run_mcmc(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg, v_cms, kappa,
+             cf_popt, cf_perr, nwalkers=32, nburn=500, nprod=3000):
     """
     Run emcee MCMC seeded from the curve_fit solution.
 
@@ -293,7 +303,7 @@ def run_mcmc(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg, cf_popt, cf_perr,
     Columns: [Mni_Msun, tm_days, ln_sigma_frac].
     ln_sigma_frac = ln(sigma_floor / L_ref) where L_ref = median(L_cgs).
     """
-    log_prob = make_log_prob(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg)
+    log_prob = make_log_prob(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg, v_cms, kappa)
 
     Mni0, tm0 = cf_popt
     # Seed ln_sigma from the data errors (CGS, no normalization needed)
@@ -662,6 +672,12 @@ def main():
     )
     Mej_cf = tm_to_mej(cf_popt[1] * DAY, v_cms, args.kappa) / MSUN
     dMej_cf = Mej_cf * 2.0 * (cf_perr[1] / cf_popt[1])
+    # Hard physical constraint: clamp curve_fit M_Ni seed to be < M_ej
+    # so MCMC walkers are initialised in the physical region from the start.
+    if cf_popt[0] >= Mej_cf:
+        print(f'  NOTE: curve_fit M_Ni ({cf_popt[0]:.3f} Msun) >= M_ej ({Mej_cf:.3f} Msun).')
+        print(f'        Clamping M_Ni seed to 0.99 * M_ej for MCMC initialisation.')
+        cf_popt = np.array([0.99 * Mej_cf, cf_popt[1]])
 
     # chi2/dof for the curve_fit solution (using formal errors; floor-free)
     L_cf_mod  = eval_model_at_data(t_d, cf_popt[0], cf_popt[1], t0_s, E0_erg)
@@ -691,7 +707,7 @@ def main():
 
     if use_mcmc:
         flat_chain = run_mcmc(
-            t_d, L_cgs, Lerr_cgs, t0_s, E0_erg,
+            t_d, L_cgs, Lerr_cgs, t0_s, E0_erg, v_cms, args.kappa,
             cf_popt, cf_perr,
             nwalkers = args.nwalkers,
             nburn    = args.nburn,
