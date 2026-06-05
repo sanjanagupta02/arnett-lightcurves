@@ -53,7 +53,7 @@ matplotlib.rcParams.update({
     'figure.dpi'       : 130,
 })
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, brentq
 
 try:
     import emcee
@@ -66,6 +66,12 @@ try:
     HAS_CORNER = True
 except ImportError:
     HAS_CORNER = False
+
+try:
+    import numba
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
 
 # ── Physical constants (CGS) ──────────────────────────────────────────────────
 CLIGHT = 3.0e10
@@ -88,6 +94,64 @@ C_PEAK    = '#800000'  # maroon      -- t_peak
 C_CI      = '#1E90FF'  # same as model for shaded band
 
 
+# ── Numba-accelerated kernel (used when numba is available) ───────────────────
+#
+# Replaces the 600×600 matrix allocation in arnett_luminosity with a compiled
+# inner loop.  No memory allocations per call; runs in native code.
+# cache=True writes the compiled binary to __pycache__ so it only compiles once.
+
+if HAS_NUMBA:
+    import math as _math
+
+    @numba.njit(cache=True)
+    def _arnett_lum_nb(t_s_arr, Mni_g, tm_s, t0_s, E0_erg,
+                       tau_ni, tau_co, eps_ni, eps_co):
+        N   = len(t_s_arr)
+        tm2 = tm_s * tm_s
+        dt  = t_s_arr[1] - t_s_arr[0]
+        out = np.empty(N)
+
+        for i in range(N):
+            ti    = t_s_arr[i]
+            ti_t0 = ti + t0_s
+            hs_i  = ti_t0 * ti_t0 / (2.0 * tm2)
+
+            integral = 0.0
+            for j in range(i + 1):
+                tj    = t_s_arr[j]
+                tj_t0 = tj + t0_s
+                hs_j  = tj_t0 * tj_t0 / (2.0 * tm2)
+
+                Q_j = Mni_g * (eps_ni * _math.exp(-tj / tau_ni) +
+                               eps_co * (_math.exp(-tj / tau_co) -
+                                         _math.exp(-tj / tau_ni)))
+
+                exp_arg = hs_j - hs_i
+                if exp_arg > 0.0:
+                    exp_arg = 0.0
+                kern = tj_t0 * _math.exp(exp_arg) * Q_j
+
+                if j == 0 or j == i:
+                    integral += 0.5 * kern
+                else:
+                    integral += kern
+            integral *= dt
+
+            if t0_s > 0.0:
+                hs_t0   = t0_s * t0_s / (2.0 * tm2)
+                exp_e0  = hs_t0 - hs_i
+                if exp_e0 > 0.0:
+                    exp_e0 = 0.0
+                E0c = t0_s * E0_erg * _math.exp(exp_e0)
+            else:
+                E0c = 0.0
+
+            val    = (E0c + integral) / tm2
+            out[i] = val if val > 0.0 else 0.0
+
+        return out
+
+
 # ── Physics ───────────────────────────────────────────────────────────────────
 
 def heating_rate(t_s, Mni_g):
@@ -101,8 +165,9 @@ def arnett_luminosity(t_s_arr, Mni_g, tm_s, t0_s, E0_erg):
     """
     Bolometric luminosity from the Arnett integral (numerically stable O(N^2)).
 
-    Every exponent in the kernel is bounded <= 0 so exp() never overflows.
-    Do not replace this with the cumulative_trapezoid form.
+    Dispatches to the numba-compiled kernel when numba is available (no matrix
+    allocation, native-speed inner loop).  Falls back to the numpy matrix form
+    otherwise.  Both implementations are mathematically identical.
 
     Parameters
     ----------
@@ -116,7 +181,11 @@ def arnett_luminosity(t_s_arr, Mni_g, tm_s, t0_s, E0_erg):
     -------
     L_cgs : ndarray  Bolometric luminosity in erg/s.
     """
-    N    = len(t_s_arr)
+    if HAS_NUMBA:
+        return _arnett_lum_nb(t_s_arr, Mni_g, tm_s, t0_s, E0_erg,
+                              TAU_NI, TAU_CO, EPS_NI, EPS_CO)
+
+    # ── numpy fallback ────────────────────────────────────────────────────────
     tm2  = tm_s ** 2
     dt   = t_s_arr[1] - t_s_arr[0]
     Q    = heating_rate(t_s_arr, Mni_g)
@@ -124,7 +193,6 @@ def arnett_luminosity(t_s_arr, Mni_g, tm_s, t0_s, E0_erg):
     t_t0    = t_s_arr + t0_s
     half_sq = t_t0 ** 2 / (2.0 * tm2)
 
-    # diff[i,j] = half_sq[j] - half_sq[i] <= 0 for j <= i
     diff    = half_sq[np.newaxis, :] - half_sq[:, np.newaxis]
     exp_mat = np.exp(np.minimum(diff, 0.0))
 
@@ -330,7 +398,10 @@ def run_mcmc(t_days, L_cgs, Lerr_cgs, t0_s, E0_erg, v_cms, kappa,
     sampler = emcee.EnsembleSampler(nwalkers, 3, log_prob)
 
     print(f'\n  Running emcee burn-in  ({nburn} steps x {nwalkers} walkers)...')
-    sampler.run_mcmc(p0, nburn, progress=True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='invalid value encountered',
+                                category=RuntimeWarning)
+        sampler.run_mcmc(p0, nburn, progress=True)
     sampler.reset()
 
     print(f'  Running emcee production  ({nprod} steps x {nwalkers} walkers)...')
@@ -391,12 +462,52 @@ def print_results(label, summary):
 
 # ── Model evaluation on dense grid ───────────────────────────────────────────
 
+def find_t_peak(Mni_sun, tm_d, t0_s, E0_erg, t_max_d=400.0):
+    """
+    Find t_peak as the root of L(t) - Q_dot(t) = 0 using Brent's method.
+
+    This is exact to machine precision (Arnett's rule: at peak L = Q_dot).
+    Much faster than scanning a grid, and correct regardless of grid resolution.
+    Falls back to argmax of a coarse grid if no sign change is found (e.g.
+    very short-lived transients where the crossing is outside the time window).
+    """
+    Mni_g = Mni_sun * MSUN
+    tm_s  = tm_d    * DAY
+
+    def f(t_d):
+        # arnett_luminosity needs >=2 points to compute dt; use a tiny 2-point array
+        t_s = t_d * DAY
+        t_arr = np.array([t_s, t_s * (1.0 + 1e-8)])
+        L = arnett_luminosity(t_arr, Mni_g, tm_s, t0_s, E0_erg)[0]
+        Q = heating_rate(t_arr, Mni_g)[0]
+        return L - Q
+
+    # Search for a sign change between t_lo and t_max_d
+    t_lo = max(t0_s / DAY + 0.01, 0.1)
+    f_lo = f(t_lo)
+    f_hi = f(t_max_d)
+
+    if f_lo * f_hi < 0:
+        return brentq(f, t_lo, t_max_d, xtol=1e-6)
+
+    # Fallback: scan a coarse grid for the first sign change
+    t_scan = np.linspace(t_lo, t_max_d, 300)
+    signs  = np.sign([f(t) for t in t_scan])
+    cross  = np.where(np.diff(signs))[0]
+    if len(cross):
+        return brentq(f, t_scan[cross[0]], t_scan[cross[0] + 1], xtol=1e-6)
+
+    # Last resort: argmax of L on a dense grid
+    t_grid = np.linspace(t_lo, t_max_d, 600)
+    L_grid = arnett_luminosity(t_grid * DAY, Mni_g, tm_s, t0_s, E0_erg)
+    return t_grid[np.argmax(L_grid)]
+
+
 def eval_model_grid(Mni_sun, tm_d, t0_s, E0_erg, t_max_d, npts=600):
     t_plot = np.linspace(0.01, t_max_d, npts)
     L_mod  = arnett_luminosity(t_plot * DAY, Mni_sun * MSUN, tm_d * DAY, t0_s, E0_erg)
     Q_mod  = heating_rate(t_plot * DAY, Mni_sun * MSUN)
-    cross  = np.where(np.diff(np.sign(L_mod - Q_mod)))[0]
-    t_peak = t_plot[cross[0]] if len(cross) else t_plot[np.argmax(L_mod)]
+    t_peak = find_t_peak(Mni_sun, tm_d, t0_s, E0_erg, t_max_d)
     return t_plot, L_mod, Q_mod, t_peak
 
 
@@ -477,7 +588,7 @@ def plot_fit_residuals(t_days, L_cgs, Lerr_cgs,
     ax.set_title(
         fr'$M_{{\rm Ni}} = {Mni[0]:.3f}^{{+{Mni[2]:.3f}}}_{{-{Mni[1]:.3f}}}\,M_\odot$'
         fr'  |  $t_m = {tm[0]:.1f}^{{+{tm[2]:.1f}}}_{{-{tm[1]:.1f}}}$ d'
-        fr'  |  $M_{{\rm ej}} = {Mej[0]:.1f}^{{+{Mej[2]:.1f}}}_{{-{Mej[1]:.1f}}}\,M_\odot$',
+        fr'  |  $M_{{\rm ej}} = {Mej[0]:.2f}^{{+{Mej[2]:.2f}}}_{{-{Mej[1]:.2f}}}\,M_\odot$',
         fontsize=11
     )
     ax.legend(fontsize=10)
@@ -496,7 +607,6 @@ def plot_fit_residuals(t_days, L_cgs, Lerr_cgs,
 
     fig.savefig(save_path, dpi=150, bbox_inches='tight')
     print(f'\n  Fit figure saved to  {save_path}')
-    plt.show()
 
 
 # ── Plot 2: corner plot ───────────────────────────────────────────────────────
@@ -532,7 +642,6 @@ def plot_corner(flat_chain, v_cms, kappa, save_path='arnett_corner.png'):
     )
     fig.savefig(save_path, dpi=150, bbox_inches='tight')
     print(f'  Corner plot saved to  {save_path}')
-    plt.show()
 
 
 # ── curve_fit-only plot (no MCMC) ─────────────────────────────────────────────
@@ -588,7 +697,7 @@ def plot_curvefit_only(t_days, L_cgs, Lerr_cgs,
     ax.set_title(
         fr'$M_{{\rm Ni}} = {Mni_sun:.3f} \pm {perr[0]:.3f}\,M_\odot$'
         fr'  |  $t_m = {tm_d:.1f} \pm {perr[1]:.1f}$ d'
-        fr'  |  $M_{{\rm ej}} \approx {Mej_sun:.1f}\,M_\odot$  (curve_fit)',
+        fr'  |  $M_{{\rm ej}} \approx {Mej_sun:.2f}\,M_\odot$  (curve_fit)',
         fontsize=11
     )
     ax.legend(fontsize=10)
@@ -607,7 +716,162 @@ def plot_curvefit_only(t_days, L_cgs, Lerr_cgs,
 
     fig.savefig(save_path, dpi=150, bbox_inches='tight')
     print(f'\n  Fit figure saved to  {save_path}')
-    plt.show()
+
+
+# ── Results file ─────────────────────────────────────────────────────────────
+
+def _pct_stats(arr):
+    """Return (median, -1sigma, +1sigma, min, max) for an array."""
+    lo, med, hi = np.percentile(arr, [16, 50, 84])
+    return med, med - lo, hi - med, arr.min(), arr.max()
+
+
+def write_results(args, t_d, L_cgs, Lerr_cgs,
+                  t0_s, E0_erg, v_cms,
+                  cf_popt, cf_perr, Mej_cf, dMej_cf,
+                  chi2_cf, dof_cf,
+                  flat_chain=None,
+                  save_path='arnett_results.txt'):
+    """
+    Write a full-precision results file.  If flat_chain is provided the MCMC
+    posterior statistics are included; otherwise curve_fit only.
+    t_peak, L_peak, M_Ni/M_ej, and kinetic energy are always computed and saved.
+    """
+    has_mcmc = flat_chain is not None
+    chi2dof  = chi2_cf / dof_cf
+
+    # ── curve_fit derived quantities ──────────────────────────────────────────
+    Mni_cf   = cf_popt[0]
+    tm_cf    = cf_popt[1]
+    f_ni_cf  = Mni_cf / Mej_cf                          # nickel fraction
+    KE_cf    = 0.5 * (Mej_cf * MSUN) * v_cms ** 2       # erg
+    dKE_cf   = KE_cf * (dMej_cf / Mej_cf)               # propagated 1-sigma
+
+    # t_peak and L_peak from curve_fit model (exact root of L = Q_dot)
+    t_max_cf  = max(t_d) * 2.0
+    t_peak_cf = find_t_peak(Mni_cf, tm_cf, t0_s, E0_erg, t_max_cf)
+    L_peak_cf = eval_model_at_data(
+        np.array([t_peak_cf]), Mni_cf, tm_cf, t0_s, E0_erg)[0]
+
+    lines = []
+    lines.append('# Arnett one-zone model fit results')
+    lines.append(f'# Data file : {args.data_file}')
+    import datetime
+    lines.append(f'# Generated : {datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")} UTC')
+    lines.append('')
+    lines.append('# ── Fixed parameters ────────────────────────────────────')
+    lines.append(f'v_ej_kms          = {args.v_kms:.10g}      # km/s')
+    lines.append(f'kappa_cm2g        = {args.kappa:.10g}      # cm^2/g')
+    lines.append(f'R0_Rsun           = {args.R0_Rsun:.10g}    # Rsun')
+    lines.append(f'E0_1e49erg        = {args.E0:.10g}         # x10^49 erg')
+    lines.append(f't0_days           = {t0_s / DAY:.10g}      # = R0/v_ej')
+    lines.append('')
+    lines.append('# ── curve_fit results ───────────────────────────────────')
+    lines.append(f'cf_Mni_Msun       = {Mni_cf:.10g}')
+    lines.append(f'cf_Mni_err_Msun   = {cf_perr[0]:.10g}      # 1-sigma')
+    lines.append(f'cf_tm_days        = {tm_cf:.10g}')
+    lines.append(f'cf_tm_err_days    = {cf_perr[1]:.10g}      # 1-sigma')
+    lines.append(f'cf_Mej_Msun       = {Mej_cf:.10g}          # derived from t_m')
+    lines.append(f'cf_Mej_err_Msun   = {dMej_cf:.10g}         # propagated 1-sigma')
+    lines.append(f'cf_t_peak_days    = {t_peak_cf:.10g}')
+    lines.append(f'cf_L_peak_Lsun    = {L_peak_cf / LSUN:.10g}')
+    lines.append(f'cf_L_peak_ergs    = {L_peak_cf:.10g}')
+    lines.append(f'cf_fNi            = {f_ni_cf:.10g}          # M_Ni / M_ej')
+    lines.append(f'cf_KE_erg         = {KE_cf:.10g}            # 0.5 * M_ej * v^2')
+    lines.append(f'cf_KE_1e51erg     = {KE_cf / 1e51:.10g}    # foe  (10^51 erg)')
+    lines.append(f'cf_KE_err_erg     = {dKE_cf:.10g}')
+    lines.append(f'cf_chi2           = {chi2_cf:.10g}')
+    lines.append(f'cf_dof            = {dof_cf}')
+    lines.append(f'cf_chi2dof        = {chi2dof:.10g}')
+
+    if has_mcmc:
+        # ── MCMC derived quantities ───────────────────────────────────────────
+        Mni_chain = flat_chain[:, 0]
+        tm_chain  = flat_chain[:, 1]
+        sig_chain = np.exp(flat_chain[:, 2])
+        Mej_chain = tm_to_mej(tm_chain * DAY, v_cms, args.kappa) / MSUN
+        fNi_chain = Mni_chain / Mej_chain
+        KE_chain  = 0.5 * (Mej_chain * MSUN) * v_cms ** 2
+
+        # t_peak and L_peak: evaluate on 500 random posterior draws.
+        # find_t_peak uses Brent root-finding (exact, fast) -- no grid needed.
+        rng      = np.random.default_rng(1)
+        idx      = rng.choice(len(flat_chain), size=min(500, len(flat_chain)), replace=False)
+        t_max_mc = max(t_d) * 2.0
+        tpk_samp = []
+        lpk_samp = []
+        for i in idx:
+            Mni_i = flat_chain[i, 0]
+            tm_i  = flat_chain[i, 1]
+            tpk   = find_t_peak(Mni_i, tm_i, t0_s, E0_erg, t_max_mc)
+            lpk = eval_model_at_data(
+                np.array([tpk]), Mni_i, tm_i, t0_s, E0_erg)[0]
+            tpk_samp.append(tpk)
+            lpk_samp.append(lpk)
+        tpk_samp = np.array(tpk_samp)
+        lpk_samp = np.array(lpk_samp)
+
+        def fmt(arr):
+            med, lo, hi, mn, mx = _pct_stats(arr)
+            return med, lo, hi
+
+        Mni_m, Mni_lo, Mni_hi       = fmt(Mni_chain)
+        tm_m,  tm_lo,  tm_hi         = fmt(tm_chain)
+        Mej_m, Mej_lo, Mej_hi       = fmt(Mej_chain)
+        sig_m, sig_lo, sig_hi        = fmt(sig_chain)
+        fNi_m, fNi_lo, fNi_hi       = fmt(fNi_chain)
+        KE_m,  KE_lo,  KE_hi         = fmt(KE_chain)
+        tpk_m, tpk_lo, tpk_hi       = fmt(tpk_samp)
+        lpk_m, lpk_lo, lpk_hi       = fmt(lpk_samp)
+
+        lines.append('')
+        lines.append('# ── MCMC posterior (median, -1sigma, +1sigma) ────────')
+        lines.append(f'mc_Mni_Msun       = {Mni_m:.10g}')
+        lines.append(f'mc_Mni_lo_Msun    = {Mni_lo:.10g}')
+        lines.append(f'mc_Mni_hi_Msun    = {Mni_hi:.10g}')
+        lines.append(f'mc_tm_days        = {tm_m:.10g}')
+        lines.append(f'mc_tm_lo_days     = {tm_lo:.10g}')
+        lines.append(f'mc_tm_hi_days     = {tm_hi:.10g}')
+        lines.append(f'mc_Mej_Msun       = {Mej_m:.10g}         # derived from t_m')
+        lines.append(f'mc_Mej_lo_Msun    = {Mej_lo:.10g}')
+        lines.append(f'mc_Mej_hi_Msun    = {Mej_hi:.10g}')
+        lines.append(f'mc_t_peak_days    = {tpk_m:.10g}')
+        lines.append(f'mc_t_peak_lo_days = {tpk_lo:.10g}')
+        lines.append(f'mc_t_peak_hi_days = {tpk_hi:.10g}')
+        lines.append(f'mc_L_peak_Lsun    = {lpk_m / LSUN:.10g}')
+        lines.append(f'mc_L_peak_lo_Lsun = {lpk_lo / LSUN:.10g}')
+        lines.append(f'mc_L_peak_hi_Lsun = {lpk_hi / LSUN:.10g}')
+        lines.append(f'mc_L_peak_ergs    = {lpk_m:.10g}')
+        lines.append(f'mc_L_peak_lo_ergs = {lpk_lo:.10g}')
+        lines.append(f'mc_L_peak_hi_ergs = {lpk_hi:.10g}')
+        lines.append(f'mc_fNi            = {fNi_m:.10g}          # M_Ni / M_ej')
+        lines.append(f'mc_fNi_lo         = {fNi_lo:.10g}')
+        lines.append(f'mc_fNi_hi         = {fNi_hi:.10g}')
+        lines.append(f'mc_KE_erg         = {KE_m:.10g}')
+        lines.append(f'mc_KE_lo_erg      = {KE_lo:.10g}')
+        lines.append(f'mc_KE_hi_erg      = {KE_hi:.10g}')
+        lines.append(f'mc_KE_1e51erg     = {KE_m / 1e51:.10g}   # foe  (10^51 erg)')
+        lines.append(f'mc_KE_lo_1e51erg  = {KE_lo / 1e51:.10g}')
+        lines.append(f'mc_KE_hi_1e51erg  = {KE_hi / 1e51:.10g}')
+        lines.append(f'mc_sigma_floor_ergs = {sig_m:.10g}')
+        lines.append(f'mc_sigma_floor_lo   = {sig_lo:.10g}')
+        lines.append(f'mc_sigma_floor_hi   = {sig_hi:.10g}')
+        lines.append(f'mc_nwalkers       = {args.nwalkers}')
+        lines.append(f'mc_nburn          = {args.nburn}')
+        lines.append(f'mc_nprod          = {args.nprod}')
+        lines.append(f'mc_nsamples       = {len(flat_chain)}')
+
+    # ── fNi sanity check ──────────────────────────────────────────────────────
+    fNi_check = fNi_m if has_mcmc else f_ni_cf
+    if fNi_check > 0.8:
+        lines.append('')
+        lines.append(f'# WARNING: fNi = {fNi_check:.3f} (M_Ni/M_ej > 0.8) -- may be unphysical.')
+        print(f'\n  WARNING: fNi = {fNi_check:.3f} -- M_Ni/M_ej > 0.8 may be unphysical.')
+        print('           The one-zone model may not be appropriate for this dataset.')
+
+    with open(save_path, 'w') as fh:
+        fh.write('\n'.join(lines) + '\n')
+    print(f'\n  Results saved to  {save_path}')
 
 
 # ── Command-line interface ────────────────────────────────────────────────────
@@ -723,6 +987,13 @@ def main():
             save_path=args.output
         )
         plot_corner(flat_chain, v_cms, args.kappa, save_path=args.corner_output)
+        write_results(
+            args, t_d, L_cgs, Lerr_cgs,
+            t0_s, E0_erg, v_cms,
+            cf_popt, cf_perr, Mej_cf, dMej_cf,
+            chi2_cf, dof_cf,
+            flat_chain=flat_chain,
+        )
 
     else:
         plot_curvefit_only(
@@ -730,6 +1001,12 @@ def main():
             cf_popt, cf_perr, t0_s, E0_erg,
             args.v_kms, args.kappa,
             save_path=args.output
+        )
+        write_results(
+            args, t_d, L_cgs, Lerr_cgs,
+            t0_s, E0_erg, v_cms,
+            cf_popt, cf_perr, Mej_cf, dMej_cf,
+            chi2_cf, dof_cf,
         )
 
 

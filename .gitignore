@@ -1,4 +1,5 @@
-# Output plots
+# Outputs
+*.txt
 *.png
 
 # Python
