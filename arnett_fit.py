@@ -131,10 +131,15 @@ if HAS_NUMBA:
                     exp_arg = 0.0
                 kern = tj_t0 * _math.exp(exp_arg) * Q_j
 
-                if j == 0 or j == i:
-                    integral += 0.5 * kern
-                else:
-                    integral += kern
+                # Trapezoid weights: 0.5 at each endpoint.  For i == 0 the
+                # two half-weights cancel (zero-width integral), matching
+                # the numpy fallback exactly.
+                w = 1.0
+                if j == 0:
+                    w -= 0.5
+                if j == i:
+                    w -= 0.5
+                integral += w * kern
             integral *= dt
 
             if t0_s > 0.0:
@@ -462,45 +467,44 @@ def print_results(label, summary):
 
 # ── Model evaluation on dense grid ───────────────────────────────────────────
 
-def find_t_peak(Mni_sun, tm_d, t0_s, E0_erg, t_max_d=400.0):
+def find_t_peak(Mni_sun, tm_d, t0_s, E0_erg, t_max_d=400.0, npts=3000):
     """
-    Find t_peak as the root of L(t) - Q_dot(t) = 0 using Brent's method.
+    Find t_peak as the root of L(t) - Q_dot(t) = 0 (Arnett's rule: at peak
+    L = Q_dot, exact for this model for any t0).
 
-    This is exact to machine precision (Arnett's rule: at peak L = Q_dot).
-    Much faster than scanning a grid, and correct regardless of grid resolution.
-    Falls back to argmax of a coarse grid if no sign change is found (e.g.
-    very short-lived transients where the crossing is outside the time window).
+    L(t) is an integral from 0 to t, so it must be evaluated on a full
+    uniform grid starting near 0 -- evaluating arnett_luminosity on a
+    2-point array at time t drops the entire heating integral and returns
+    only the shock-cooling term.  We therefore compute L once on a dense
+    grid and Brent-solve the interpolated L - Q.
     """
     Mni_g = Mni_sun * MSUN
     tm_s  = tm_d    * DAY
 
-    def f(t_d):
-        # arnett_luminosity needs >=2 points to compute dt; use a tiny 2-point array
-        t_s = t_d * DAY
-        t_arr = np.array([t_s, t_s * (1.0 + 1e-8)])
-        L = arnett_luminosity(t_arr, Mni_g, tm_s, t0_s, E0_erg)[0]
-        Q = heating_rate(t_arr, Mni_g)[0]
-        return L - Q
-
-    # Search for a sign change between t_lo and t_max_d
-    t_lo = max(t0_s / DAY + 0.01, 0.1)
-    f_lo = f(t_lo)
-    f_hi = f(t_max_d)
-
-    if f_lo * f_hi < 0:
-        return brentq(f, t_lo, t_max_d, xtol=1e-6)
-
-    # Fallback: scan a coarse grid for the first sign change
-    t_scan = np.linspace(t_lo, t_max_d, 300)
-    signs  = np.sign([f(t) for t in t_scan])
-    cross  = np.where(np.diff(signs))[0]
-    if len(cross):
-        return brentq(f, t_scan[cross[0]], t_scan[cross[0] + 1], xtol=1e-6)
-
-    # Last resort: argmax of L on a dense grid
-    t_grid = np.linspace(t_lo, t_max_d, 600)
+    t_grid = np.linspace(0.01, t_max_d, npts)
     L_grid = arnett_luminosity(t_grid * DAY, Mni_g, tm_s, t0_s, E0_erg)
-    return t_grid[np.argmax(L_grid)]
+    Q_grid = heating_rate(t_grid * DAY, Mni_g)
+
+    def f(t_d):
+        return np.interp(t_d, t_grid, L_grid) - np.interp(t_d, t_grid, Q_grid)
+
+    # Find the sign change bracketing the L = Q crossing after the L maximum
+    # region: scan for the first crossing at/after the grid argmax of L.
+    i_max = np.argmax(L_grid)
+    diff  = L_grid - Q_grid
+    signs = np.sign(diff)
+    cross = np.where(np.diff(signs[i_max:]) != 0)[0]
+    if len(cross):
+        i0 = i_max + cross[0]
+        return brentq(f, t_grid[i0], t_grid[i0 + 1], xtol=1e-6)
+    # Also try any crossing before the maximum (shock-dominated cases)
+    cross = np.where(np.diff(signs) != 0)[0]
+    if len(cross):
+        i0 = cross[0]
+        return brentq(f, t_grid[i0], t_grid[i0 + 1], xtol=1e-6)
+
+    # Last resort: argmax of L on the dense grid
+    return t_grid[i_max]
 
 
 def eval_model_grid(Mni_sun, tm_d, t0_s, E0_erg, t_max_d, npts=600):
